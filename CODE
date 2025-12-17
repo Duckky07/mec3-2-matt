@@ -1,0 +1,135 @@
+#include <WiFi.h>
+#include <PubSubClient.h>
+
+// ===== Pin กด-แสดงผล =====
+#define LED1     2          // LED บนบอร์ด
+#define PTM_PIN  34         // ขาอนาล็อกที่ต่อ PTM (ปรับตามการต่อจริง)
+
+// ===== WiFi =====
+const char* ssid        = "Sitthiphattha";
+const char* password    = "24101998";
+
+// ===== MQTT broker =====
+const char* mqtt_server    = "broker.emqx.io";
+const int   mqtt_port      = 1883;
+
+const char* mqtt_client_id = "esp32_sittipat";   // อย่าให้ซ้ำกับ MQTTX
+const char* mqtt_username  = "sittipat";
+const char* mqtt_password  = "thammakeson";
+
+// ===== MQTT Topics =====
+const char* sub_topic_led       = "/sittipat/led";          // รับคำสั่ง on/off
+const char* pub_topic_led_state = "/sittipat/led/device";   // ตอบกลับสถานะ LED
+const char* pub_topic_dht       = "/sittipat/esp32";        // ใช้ส่งอุณหภูมิจาก PTM
+
+WiFiClient espClient;
+PubSubClient client(espClient);
+
+char msg[150];
+long lastMsg = 0;
+
+// ================== ฟังก์ชันอ่านค่า PTM ==================
+float readPTMTempC() {
+  // อ่านค่า ADC 12 บิต (0..4095)
+  int raw = analogRead(PTM_PIN);
+
+  // แปลงเป็นแรงดัน (สมมติใช้ 3.3V)
+  float voltage = (raw / 4095.0) * 3.3;
+
+  // ตัวอย่างสมมติ: 10 mV ต่อ 1°C (0.01 V/°C) -> temp = V * 100
+  // * ตรงนี้ต้องดูจาก datasheet ของ PTM แล้วปรับเอง *
+  float tempC = voltage * 100.0;
+
+  return tempC;
+}
+
+// ================== MQTT reconnect ==================
+void reconnect() {
+  while (!client.connected()) {
+    Serial.print("Attempting MQTT connection…");
+    if (client.connect(mqtt_client_id, mqtt_username, mqtt_password)) {
+      Serial.println("connected");
+      client.subscribe(sub_topic_led);
+    } else {
+      Serial.print("failed, rc=");
+      Serial.print(client.state());
+      Serial.println(" try again in 5 seconds");
+      delay(5000);
+    }
+  }
+}
+
+// ================== MQTT callback ==================
+void callback(char* topic, byte* payload, unsigned int length) {
+  Serial.print("Message arrived [");
+  Serial.print(topic);
+  Serial.print("] ");
+
+  String message;
+  for (int i = 0; i < length; i++) {
+    message += (char)payload[i];
+  }
+  Serial.println(message);
+
+  if (String(topic) == sub_topic_led) {
+    if (message == "on") {
+      digitalWrite(LED1, HIGH);
+      client.publish(pub_topic_led_state, "LED ON");
+      Serial.println("LED ON");
+    } else if (message == "off") {
+      digitalWrite(LED1, LOW);
+      client.publish(pub_topic_led_state, "LED OFF");
+      Serial.println("LED OFF");
+    }
+  }
+}
+
+// ================== SETUP ==================
+void setup() {
+  Serial.begin(115200);
+  Serial.println();
+  Serial.print("Connecting to ");
+  Serial.println(ssid);
+
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println();
+  Serial.println("WiFi connected");
+  Serial.print("IP address: ");
+  Serial.println(WiFi.localIP());
+
+  client.setServer(mqtt_server, mqtt_port);
+  client.setCallback(callback);
+
+  pinMode(LED1, OUTPUT);
+  digitalWrite(LED1, LOW);
+
+  pinMode(PTM_PIN, INPUT);   // ขาอ่าน PTM
+}
+
+// ================== LOOP ==================
+void loop() {
+  if (!client.connected()) {
+    reconnect();
+  }
+  client.loop();
+
+  long now = millis();
+  if (now - lastMsg > 2000) {       // ส่งทุก 2 วินาที
+    lastMsg = now;
+
+    float temperature = readPTMTempC();
+
+    // แสดงใน Serial Monitor
+    Serial.print("Temp(C): ");
+    Serial.println(temperature, 2);
+
+    // ส่งขึ้น MQTT (ตัวอย่าง: ส่งเฉพาะอุณหภูมิ)
+    String data = String(temperature, 2);     // 2 ตำแหน่งทศนิยม
+    data.toCharArray(msg, data.length() + 1);
+    client.publish(pub_topic_dht, msg);
+  }
+}
