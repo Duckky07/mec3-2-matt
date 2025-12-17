@@ -1,2 +1,2 @@
-# mec3-1
-mec3-1-MQTT
+# mec3-2
+mec3-2-MQTT
